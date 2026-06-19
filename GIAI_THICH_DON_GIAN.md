@@ -197,14 +197,14 @@ Sàng lọc đặc trưng qua **3 lớp kiểm định thống kê phi tham số
 
 ### 5.1 Phân Tích Theo Thời Gian (Chuỗi thời gian & Phân rã STL)
 
-- **Xu hướng (Trend):** Đỉnh năm 2016 (~2.1M VND/ngày), giảm 44% đến 2022 → Mô hình phải học xu hướng động, không dùng định mức cố định
-- **Mùa vụ (Seasonality):** Chiếm **70% phương sai** — lý do chính chọn Prophet thay vì hồi quy tuyến tính
-- **Phần dư (Residual):** Chiếm 12% phương sai — LightGBM học phần này
+- **Xu hướng (Trend):** Đỉnh năm 2016 (tổng năm ~2,105M VND, tức bình quân ~5.75M VND/ngày), giảm 44% đến 2022 → Mô hình phải học xu hướng động, không dùng định mức cố định
+- **Mùa vụ (Seasonality):** Chiếm **~70% phương sai** (var_seasonal/var_total) — lý do chính chọn Prophet thay vì hồi quy tuyến tính
+- **Phần dư (Residual):** Chiếm ~19% phương sai (xu hướng ~11%) — LightGBM học phần này
 
 ### 5.2 Phân Tích Theo Nhóm
 
 - **Theo danh mục:** Streetwear = 80.1% doanh thu; GenZ margin cao nhất (15.5%)
-- **Theo quý:** Doanh thu Q2 > Q1 > Q4 > Q3 (tháng 5 cao nhất, tháng 12 thấp nhất). Riêng **ROI marketing/phiên** thì Q1 cao nhất (~43%) > Q2 (~37%) > Q4 > Q3 — xem §10.2
+- **Theo quý:** Doanh thu Q2 > Q3 > Q1 > Q4 (tháng 5 cao nhất ~6.6M, tháng 12 thấp nhất ~2.4M). Riêng **ROI marketing/phiên** thì Q1 cao nhất (~43%) > Q2 (~37%) > Q4 (~14%) > Q3 (~5%) — xem §10.2
 
 ### 5.3 Phát Hiện Bất Thường & Mối Quan Hệ Đáng Chú Ý
 
