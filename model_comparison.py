@@ -57,7 +57,7 @@ TRAIN_END, VAL_START, VAL_END = "2021-12-31", "2022-01-01", "2022-12-31"
 # Siêu tham số LGBM tốt nhất (Optuna TPE 50 trials, tìm 1 lần trong pipeline.py).
 BEST_PARAMS = dict(learning_rate=0.099, max_depth=3, num_leaves=41,
                    min_child_samples=30, subsample=0.8, colsample_bytree=0.8,
-                   reg_alpha=8.37, reg_lambda=1.65, n_estimators=1000,
+                   reg_alpha=8.37, reg_lambda=1.65, n_estimators=300,
                    random_state=42, verbose=-1)
 
 BASE_FEATS = ["resid_lag365", "resid_lag364", "resid_lag366", "resid_roll28_lag365",
@@ -119,9 +119,11 @@ def hybrid_val_pred(df, target, use_promo, feats, exog, full_idx):
 def metrics(actual: pd.Series, pred: pd.Series):
     j = pd.concat([actual.rename("a"), pred.rename("p")], axis=1).dropna()
     a, p = j["a"], j["p"]
+    mape = float((np.abs(a - p) / np.abs(a).replace(0, np.nan)).mean() * 100)
     return (mean_absolute_error(a, p) / 1e6,
             np.sqrt(mean_squared_error(a, p)) / 1e6,
-            r2_score(a, p))
+            r2_score(a, p),
+            mape)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -141,13 +143,14 @@ def run_all():
     def rec(mid, name, rev_pred=None, cogs_pred=None, note=""):
         d = {"id": mid, "name": name, "note": note}
         if rev_pred is not None:
-            d["rev_mae"], d["rev_rmse"], d["rev_r2"] = metrics(rev_val, rev_pred)
+            d["rev_mae"], d["rev_rmse"], d["rev_r2"], d["rev_mape"] = metrics(rev_val, rev_pred)
         if cogs_pred is not None:
             cj = pd.concat([cogs_val.rename("a"), cogs_pred.rename("c"),
                             (rev_pred if rev_pred is not None else rev_val).rename("r")],
                            axis=1).dropna()
             d["cogs_mae"] = mean_absolute_error(cj["a"], cj["c"]) / 1e6
             d["cogs_r2"] = r2_score(cj["a"], cj["c"])
+            d["cogs_mape"] = float((np.abs(cj["a"] - cj["c"]) / np.abs(cj["a"]).replace(0, np.nan)).mean() * 100)
             d["pct_clip"] = float((cj["c"] > cj["r"]).mean() * 100)
         rows.append(d)
         print(f"  [{mid}] {name} ... done")
@@ -213,24 +216,27 @@ def run_all():
 
 
 def print_table(rows):
-    print("\n" + "=" * 100)
+    W = 116
+    print("\n" + "=" * W)
     print("SO SÁNH 8 KIẾN TRÚC — Validation OOS 2022 (train ≤2021)")
-    print("=" * 100)
-    h = f"{'ID':5s} {'Mô hình':34s} {'Rev MAE':>8s} {'Rev RMSE':>9s} {'Rev R²':>8s} " \
-        f"{'COGS R²':>8s} {'COGS>Rev%':>10s}"
+    print("=" * W)
+    h = (f"{'ID':5s} {'Mô hình':34s} {'Rev MAE':>8s} {'Rev RMSE':>9s} {'Rev R²':>7s} "
+         f"{'Rev MAPE':>9s} {'COGS R²':>8s} {'COGS MAPE':>10s} {'COGS>Rev%':>10s}")
     print(h)
-    print("-" * 100)
+    print("-" * W)
     for d in rows:
-        rev_mae = f"{d['rev_mae']:.3f}" if "rev_mae" in d else "—"
-        rev_rmse = f"{d['rev_rmse']:.3f}" if "rev_rmse" in d else "—"
-        rev_r2 = f"{d['rev_r2']:.3f}" if "rev_r2" in d else "—"
-        cogs_r2 = f"{d['cogs_r2']:.3f}" if "cogs_r2" in d else "—"
-        clip = f"{d['pct_clip']:.1f}%" if "pct_clip" in d else "—"
+        rev_mae  = f"{d['rev_mae']:.3f}"   if "rev_mae"   in d else "—"
+        rev_rmse = f"{d['rev_rmse']:.3f}"  if "rev_rmse"  in d else "—"
+        rev_r2   = f"{d['rev_r2']:.3f}"    if "rev_r2"    in d else "—"
+        rev_mape = f"{d['rev_mape']:.1f}%" if "rev_mape"  in d else "—"
+        cogs_r2  = f"{d['cogs_r2']:.3f}"   if "cogs_r2"   in d else "—"
+        cogs_mape= f"{d['cogs_mape']:.1f}%"if "cogs_mape" in d else "—"
+        clip     = f"{d['pct_clip']:.1f}%" if "pct_clip"  in d else "—"
         print(f"{d['id']:5s} {d['name'][:34]:34s} {rev_mae:>8s} {rev_rmse:>9s} "
-              f"{rev_r2:>8s} {cogs_r2:>8s} {clip:>10s}")
-    print("=" * 100)
-    print("Ghi chú: Rev MAE/RMSE đơn vị triệu VND. pct COGS>Rev trên val 2022 (năm chẵn)")
-    print("→ M3.x ≈ 0%; trên TEST 2023–24 (năm lẻ, clearance tháng 8) M3.2 = 5.7% (pipeline.py).")
+              f"{rev_r2:>7s} {rev_mape:>9s} {cogs_r2:>8s} {cogs_mape:>10s} {clip:>10s}")
+    print("=" * W)
+    print("Ghi chú: Rev MAE/RMSE đơn vị triệu VND. MAPE = mean|actual−pred|/|actual|×100.")
+    print("pct COGS>Rev trên val 2022 (năm chẵn); M3.2 test 2023–24 = 5.7% (pipeline.py).")
 
     # Lưu CSV làm minh chứng
     out = pd.DataFrame(rows).set_index("id")
