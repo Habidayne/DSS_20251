@@ -124,7 +124,7 @@ def viz2_profit_margin_heatmap(sales: pd.DataFrame, out_dir: str):
 
 def viz3_stl_decomposition(sales: pd.DataFrame, out_dir: str):
     """
-    Viz 3: Phân rã STL — Mùa vụ chiếm ~35% biến động
+    Viz 3: Phân rã STL — Mùa vụ chiếm ~70% biến động (var_seasonal/var_total)
     """
     rev_daily = sales["Revenue"].resample("D").mean().interpolate()
     stl = STL(rev_daily, period=365, robust=True)
@@ -132,7 +132,7 @@ def viz3_stl_decomposition(sales: pd.DataFrame, out_dir: str):
 
     fig, axes = plt.subplots(4, 1, figsize=(14, 10), sharex=True)
     fig.patch.set_facecolor("white")
-    fig.suptitle("Phân rã STL: Mùa vụ & Xu hướng chiếm 65% tổng biến động doanh thu",
+    fig.suptitle("Phân rã STL: Mùa vụ chiếm ~70% tổng biến động doanh thu",
                  fontsize=12, fontweight="bold", y=1.01)
 
     components = [
@@ -169,7 +169,7 @@ def viz3_stl_decomposition(sales: pd.DataFrame, out_dir: str):
 def viz4_revenue_by_category(order_items_path: str, products_path: str,
                               orders_path: str, out_dir: str):
     """
-    Viz 4: Top categories chiếm 72% doanh thu — JOIN order_items + products + orders
+    Viz 4: Streetwear chiếm 80.1% doanh thu — JOIN order_items + products + orders
     """
     oi = pd.read_csv(order_items_path)
     pr = pd.read_csv(products_path)[["product_id", "category", "cogs"]]

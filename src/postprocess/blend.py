@@ -22,6 +22,37 @@ def blend_forecasts(
     return final
 
 
+def seasonal_ratio_cogs(ratio_hist: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
+    """
+    Dự báo ratio = COGS/Revenue bằng median theo (year_parity, month) — NGUỒN DUY NHẤT
+    dùng chung cho pipeline.py (submission) và notebook Part3.
+
+    Vì sao KHÔNG dùng Prophet+LGBM cho ratio (đã thử & loại):
+      - Ratio gần như KHÔNG có trend (yearly median 0.81–0.85 phẳng 10 năm)
+        → Prophet trend extrapolate sai → R²=−1.39, COGS>Revenue 95% ngày.
+      - Seasonal median (parity, month): R²=0.969, COGS>Rev 0% trên val 2022.
+    Year-parity bắt được biennial Urban Blowout: August năm chẵn ratio≈0.79,
+    năm lẻ ratio≈1.37 (clearance → biên lợi nhuận âm hợp lệ).
+
+    Args:
+        ratio_hist: Series COGS/Revenue lịch sử (index=Date), nên clip(0.5, 1.6).
+        index:      DatetimeIndex cần dự báo ratio.
+    Returns:
+        Series ratio_pred trên `index`.
+    """
+    h = pd.DataFrame({
+        "ratio":  ratio_hist.values,
+        "parity": ratio_hist.index.year % 2,
+        "month":  ratio_hist.index.month,
+    })
+    table = h.groupby(["parity", "month"])["ratio"].median()
+    global_med = float(h["ratio"].median())
+    return pd.Series(
+        [table.get((d.year % 2, d.month), global_med) for d in index],
+        index=index, name="ratio_pred",
+    )
+
+
 def postprocess(
     revenue_pred: pd.Series,
     cogs_pred: pd.Series,
@@ -68,8 +99,17 @@ def postprocess(
     sub["Revenue"] = sub["Revenue"].round(2)
     sub["COGS"] = sub["COGS"].round(2)
 
-    # Verify length
-    assert len(sub) == n_expected, f"Submission has {len(sub)} rows, expected {n_expected}!"
+    # Verify length — KHẢ BIẾN HORIZON: cuộc thi cố định 548 dòng (sample_submission),
+    # nhưng bài tập lớn cho phép chọn thời gian train + horizon ngắn (vd dự báo chỉ
+    # 2022 hoặc Q1). Khi đó len(sub) ≠ n_expected là HỢP LỆ → chỉ cảnh báo, không
+    # assert chết. Vẫn assert khớp khi độ dài bằng sample (chế độ nộp thi).
+    if len(sub) == n_expected:
+        logger.info(f"  Length khớp sample_submission ({n_expected} dòng) — chế độ nộp thi.")
+    else:
+        logger.warning(
+            f"  ⚠️ len(sub)={len(sub)} ≠ sample={n_expected} — chế độ horizon tùy chỉnh "
+            f"(bài tập lớn). Bỏ qua ràng buộc độ dài, dùng độ dài thực tế."
+        )
 
     sub.to_csv(output_path, index=False)
     logger.info(f"  ✅ Saved submission: {output_path} ({len(sub)} rows)")

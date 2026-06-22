@@ -83,7 +83,7 @@ def viz9_model_comparison(sales: pd.DataFrame, val_results: dict, out_dir: str):
     ax2.legend(fontsize=8)
     ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}M"))
 
-    fig.suptitle("So sánh hiệu suất mô hình dự báo: Tổ hợp Prophet + LightGBM vượt trội Baseline >40%",
+    fig.suptitle("So sánh hiệu suất mô hình dự báo: Tổ hợp Prophet + CatBoost vượt trội Baseline & Prophet đơn lẻ",
                  fontsize=12, fontweight="bold")
     plt.tight_layout()
     path = os.path.join(out_dir, "viz9_model_comparison.png")

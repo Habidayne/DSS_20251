@@ -1,7 +1,7 @@
 """
-model_comparison.py — SO SÁNH 8 KIẾN TRÚC MÔ HÌNH (đối chiếu GIAI_THICH §7-9)
+model_comparison.py — SO SÁNH 10 KIẾN TRÚC MÔ HÌNH (đối chiếu GIAI_THICH §7-9)
 =============================================================================
-Chạy lần lượt 8 kiến trúc trên CÙNG một split (train ≤2021 / val 2022 OOS) và
+Chạy lần lượt 10 kiến trúc trên CÙNG một split (train ≤2021 / val 2022 OOS) và
 in bảng so sánh MAE / RMSE / R² (Revenue) + COGS R² + % ngày COGS>Revenue.
 
     M1.0  YoY Naive              — pred = Revenue 365 ngày trước
@@ -11,12 +11,25 @@ in bảng so sánh MAE / RMSE / R² (Revenue) + COGS R² + % ngày COGS>Revenue.
     M2.2  Prophet+LGBM, COGS ratio-qua-Prophet — ratio không trend → hỏng
     M3.0  Hybrid + Seasonal Ratio COGS    — Rev=Prophet(no promo)+LGBM base
     M3.1  + Promo Events tất định         — Prophet thêm 6 promo family
-    M3.2  + 4 Feature tồn kho/web ✅ CHỐT  — = pipeline.py
+    M3.2  + 4 Feature tồn kho/web         — exog lag365 (additive seasonality)
+    M3.3  + Multiplicative seasonality    — biên độ mùa vụ scale theo level
+    M3.4  + Calendar nâng cao (LGBM)      — days_to_month_end + week_of_month
+    M3.5  → CatBoost + lag730 ✅ CHỐT     — đổi residual learner + cắt compounding = pipeline.py
 
 GHI CHÚ PHƯƠNG PHÁP:
-  - Các biến thể Hybrid (M3.0–M3.2) dùng CHUNG bộ siêu tham số LGBM tốt nhất
-    (Optuna tìm 1 lần trong pipeline.py) để CÔ LẬP ảnh hưởng KIẾN TRÚC, không
-    để biến động Optuna nhiễu kết quả. M3.2 ở đây ≈ pipeline.py (nguồn sự thật).
+  - Các biến thể Hybrid (M3.0–M3.4) dùng CHUNG bộ siêu tham số LGBM để CÔ LẬP
+    ảnh hưởng KIẾN TRÚC. M3.5 đổi sang CatBoost (params thủ công depth=3, KHÔNG
+    Optuna — tuning trên CV tĩnh overfit production năm-2). M3.5 = pipeline.py.
+  - M3.4→M3.5: shootout 4 model (residual_model_shootout.py) CatBoost thắng đều
+    2 fold năm-2 (−4.8% vs LGBM); + resid_lag730 cắt compounding năm thứ 2 (2024
+    đọc 2022 thật thay 2023 dự-đoán). Tuning/ensemble/cat_features/sentiment đã
+    thử & loại (đều overfit năm thường ≈2024).
+  - M3.2→M3.3 = additive→multiplicative seasonality. Backtest 3 fold thắng ĐỀU
+    (val2020 −41%, val2021 −2.8%, val2022 −5.7%) → prophet_mult_backtest.py.
+  - M3.3→M3.4 = + days_to_month_end + week_of_month. Backtest 3 fold thắng ĐỀU
+    (−5.4% / −3.0% / −3.1%, TB −3.8%) → feature_cal_backtest.py. Ablation 6 ứng
+    viên (feature_ablation_v2.py): 4 cái còn lại (rolling resid/exog) BỊ LOẠI vì
+    inventory là chuỗi tháng (roll vô nghĩa) + roll28 đã bắt đủ.
   - M2.1/M2.2 là kiến trúc ĐÃ LOẠI, dựng lại trên dữ liệu hiện tại để minh chứng
     thất bại (COGS>Revenue cao) — số có thể lệch log lịch sử (denoise đã đổi).
   - Đánh giá trên val 2022 (năm CHẴN, không có Urban Blowout) → pct_clipped của
@@ -45,7 +58,8 @@ from src.utils import load_sales
 from src.denoising import denoise_target
 from src.prophet_model.train_prophet import _build_holidays
 from src.lgbm_model import make_future_safe_features
-from pipeline import _seasonal_ratio, _load_exog_regressors
+from src.postprocess import seasonal_ratio_cogs as _seasonal_ratio
+from pipeline import _load_exog_regressors
 
 import logging
 for noisy in ("prophet", "cmdstanpy", "gridbreaker"):
@@ -65,20 +79,26 @@ BASE_FEATS = ["resid_lag365", "resid_lag364", "resid_lag366", "resid_roll28_lag3
               "weekofyear", "quarter", "dayofyear"]
 EXOG_FEATS = ["fill_rate_lag365", "days_of_supply_lag365",
               "overstock_pct_lag365", "sessions_lag365"]
-FULL_FEATS = BASE_FEATS + EXOG_FEATS
+CAL_FEATS  = ["days_to_month_end", "week_of_month"]   # M3.4 — calendar nâng cao
+FULL_FEATS    = BASE_FEATS + EXOG_FEATS               # 15 feats (M3.2/M3.3)
+FULL_FEATS_V2 = FULL_FEATS + CAL_FEATS                # 17 feats (M3.4)
+FULL_FEATS_V3 = FULL_FEATS_V2 + ["resid_lag730"]      # 18 feats (M3.5 = pipeline.py)
 
 
 # ──────────────────────────────────────────────────────────────────────────
 # Khối dựng sẵn
 # ──────────────────────────────────────────────────────────────────────────
-def fit_prophet_cfg(series: pd.Series, use_promo: bool) -> Prophet:
-    """Prophet với holiday bật/tắt 6 promo family (tách M3.0 vs M3.1)."""
+def fit_prophet_cfg(series: pd.Series, use_promo: bool,
+                    seasonality_mode: str = "additive") -> Prophet:
+    """Prophet với holiday bật/tắt 6 promo family (tách M3.0 vs M3.1) và
+    seasonality_mode additive/multiplicative (tách M3.2 vs M3.3)."""
     hol = _build_holidays()
     if not use_promo:
         hol = hol[~hol["holiday"].str.startswith("promo_")]
     m = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False,
                 holidays=hol, changepoint_prior_scale=0.15, seasonality_prior_scale=10.0,
-                holidays_prior_scale=10.0, changepoint_range=0.9)
+                holidays_prior_scale=10.0, changepoint_range=0.9,
+                seasonality_mode=seasonality_mode)
     m.fit(pd.DataFrame({"ds": series.index, "y": series.values}))
     return m
 
@@ -91,11 +111,13 @@ def prophet_predict(model: Prophet, start: str, end: str) -> pd.DataFrame:
         columns={"yhat": "prophet_pred", "trend": "prophet_trend"})
 
 
-def hybrid_val_pred(df, target, use_promo, feats, exog, full_idx):
-    """Prophet(+promo?) + LGBM-residual → dự báo val 2022 (không cần rolling vì
-    lag365 của 2022 = residual 2021 đã biết). Trả (val_pred, prophet_df)."""
+def hybrid_val_pred(df, target, use_promo, feats, exog, full_idx,
+                    seasonality_mode="additive", model="lgbm"):
+    """Prophet(+promo?) + residual learner → dự báo val 2022 (không cần rolling vì
+    lag365 của 2022 = residual 2021 đã biết). Trả (val_pred, prophet_df).
+    model='lgbm' (M3.0–M3.4) hoặc 'catboost' (M3.5)."""
     train_series = df.loc[:TRAIN_END, f"Clean_{target}"].dropna()
-    mp = fit_prophet_cfg(train_series, use_promo)
+    mp = fit_prophet_cfg(train_series, use_promo, seasonality_mode)
     pp = prophet_predict(mp, str(df.index.min().date()), VAL_END)
 
     train_prophet = pp.loc[:TRAIN_END, "prophet_pred"]
@@ -107,7 +129,12 @@ def hybrid_val_pred(df, target, use_promo, feats, exog, full_idx):
     Xtr = X.loc[:TRAIN_END, feats].dropna()
     ytr = resid_train.reindex(Xtr.index).dropna()
     Xtr = Xtr.reindex(ytr.index)
-    m = lgb.LGBMRegressor(**BEST_PARAMS)
+    if model == "catboost":
+        from catboost import CatBoostRegressor
+        from src.lgbm_model import CATBOOST_PARAMS
+        m = CatBoostRegressor(**CATBOOST_PARAMS)
+    else:
+        m = lgb.LGBMRegressor(**BEST_PARAMS)
     m.fit(Xtr, ytr)
 
     val_prophet = pp.loc[VAL_START:VAL_END, "prophet_pred"]
@@ -206,11 +233,33 @@ def run_all():
     rec("M3.1", "+ Promo Events tất định", rev_pred=rev31, cogs_pred=cogs31,
         note="Prophet + 6 promo family")
 
-    # M3.2 — + 4 exog (CHỐT) = pipeline.py
-    rev32, _ = hybrid_val_pred(df, "Revenue", True, FULL_FEATS, exog, full_idx)
+    # M3.2 — + 4 exog (additive seasonality)
+    rev32, _ = hybrid_val_pred(df, "Revenue", True, FULL_FEATS, exog, full_idx,
+                               seasonality_mode="additive")
     cogs32 = rev32 * _seasonal_ratio(ratio_train, rev32.index)
-    rec("M3.2", "+ 4 Feature tồn kho/web ✅ CHỐT", rev_pred=rev32, cogs_pred=cogs32,
-        note="fill_rate+days_supply+overstock+sessions lag365")
+    rec("M3.2", "+ 4 Feature tồn kho/web", rev_pred=rev32, cogs_pred=cogs32,
+        note="fill_rate+days_supply+overstock+sessions lag365 (additive)")
+
+    # M3.3 — + multiplicative seasonality
+    rev33, _ = hybrid_val_pred(df, "Revenue", True, FULL_FEATS, exog, full_idx,
+                               seasonality_mode="multiplicative")
+    cogs33 = rev33 * _seasonal_ratio(ratio_train, rev33.index)
+    rec("M3.3", "+ Multiplicative seas.", rev_pred=rev33, cogs_pred=cogs33,
+        note="seasonality_mode=multiplicative (phương sai tăng theo level)")
+
+    # M3.4 — + 2 calendar feature (LGBM, multiplicative)
+    rev34, _ = hybrid_val_pred(df, "Revenue", True, FULL_FEATS_V2, exog, full_idx,
+                               seasonality_mode="multiplicative")
+    cogs34 = rev34 * _seasonal_ratio(ratio_train, rev34.index)
+    rec("M3.4", "+ Calendar nâng cao (LGBM)", rev_pred=rev34, cogs_pred=cogs34,
+        note="+ days_to_month_end + week_of_month")
+
+    # M3.5 — LGBM→CatBoost + resid_lag730 (CHỐT) = pipeline.py
+    rev35, _ = hybrid_val_pred(df, "Revenue", True, FULL_FEATS_V3, exog, full_idx,
+                               seasonality_mode="multiplicative", model="catboost")
+    cogs35 = rev35 * _seasonal_ratio(ratio_train, rev35.index)
+    rec("M3.5", "→ CatBoost + lag730 ✅ CHỐT", rev_pred=rev35, cogs_pred=cogs35,
+        note="LGBM→CatBoost (production-sim −4.8%), + resid_lag730 cắt compounding")
 
     return rows
 
@@ -218,7 +267,7 @@ def run_all():
 def print_table(rows):
     W = 116
     print("\n" + "=" * W)
-    print("SO SÁNH 8 KIẾN TRÚC — Validation OOS 2022 (train ≤2021)")
+    print("SO SÁNH 11 KIẾN TRÚC — Validation OOS 2022 (train ≤2021)")
     print("=" * W)
     h = (f"{'ID':5s} {'Mô hình':34s} {'Rev MAE':>8s} {'Rev RMSE':>9s} {'Rev R²':>7s} "
          f"{'Rev MAPE':>9s} {'COGS R²':>8s} {'COGS MAPE':>10s} {'COGS>Rev%':>10s}")
@@ -236,7 +285,12 @@ def print_table(rows):
               f"{rev_r2:>7s} {rev_mape:>9s} {cogs_r2:>8s} {cogs_mape:>10s} {clip:>10s}")
     print("=" * W)
     print("Ghi chú: Rev MAE/RMSE đơn vị triệu VND. MAPE = mean|actual−pred|/|actual|×100.")
-    print("pct COGS>Rev trên val 2022 (năm chẵn); M3.2 test 2023–24 = 5.7% (pipeline.py).")
+    print("pct COGS>Rev trên val 2022 (năm chẵn); M3.4 test 2023–24 = 5.7% (pipeline.py).")
+    print("M3.2→M3.3: additive→multiplicative; M3.3→M3.4: +2 calendar (backtest 3 fold).")
+    print("⚠ M3.5 THUA M3.4 trên val TĨNH (0.670 vs 0.654) — ĐÚNG NHƯ KỲ VỌNG: bảng này")
+    print("  đo val 2022 tĩnh (lag365 đọc 2021 THẬT, KHÔNG compounding). M3.5 được chọn")
+    print("  theo PRODUCTION-SIM năm-2 (2024 đọc 2023 dự-đoán): CatBoost+lag730 thắng")
+    print("  −4.8% (production_sim_backtest.py). 'Tối ưu trên tĩnh ≠ tốt trong production.'")
 
     # Lưu CSV làm minh chứng
     out = pd.DataFrame(rows).set_index("id")
@@ -246,7 +300,7 @@ def print_table(rows):
 
 if __name__ == "__main__":
     print("#" * 100)
-    print("#  SO SÁNH 8 KIẾN TRÚC MÔ HÌNH — The Gridbreaker (GIAI_THICH §7-9)")
+    print("#  SO SÁNH 11 KIẾN TRÚC MÔ HÌNH — The Gridbreaker (GIAI_THICH §7-9)")
     print("#" * 100)
     rows = run_all()
     print_table(rows)

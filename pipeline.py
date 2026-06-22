@@ -26,8 +26,10 @@ sys.path.insert(0, ROOT)
 from src.utils import setup_logger, mape, load_sales, SEED
 from src.denoising import denoise_target
 from src.prophet_model import fit_prophet, predict_prophet
-from src.lgbm_model import fit_lgbm_residual, predict_lgbm_residual, make_future_safe_features
-from src.postprocess import blend_forecasts, postprocess
+from src.lgbm_model import (
+    fit_catboost_residual, predict_catboost_residual, make_future_safe_features,
+)
+from src.postprocess import blend_forecasts, postprocess, seasonal_ratio_cogs
 
 np.random.seed(SEED)
 
@@ -44,7 +46,7 @@ TRAIN_END  = "2021-12-31"
 VAL_START  = "2022-01-01"
 VAL_END    = "2022-12-31"
 TEST_START = "2023-01-01"
-TEST_END   = "2024-07-01"
+TEST_END   = "2024-07-01"   # khớp sample_submission.csv (548 dòng) — chế độ nộp thi
 
 logger = setup_logger(LOG_FILE)
 logger.info("THE GRIDBREAKER PIPELINE - START")
@@ -169,23 +171,18 @@ def _forecast_one_target(target: str, df: pd.DataFrame, full_idx: pd.DatetimeInd
     y_train_clean = y_train.reindex(X_train_clean.index).dropna()
     X_train_clean = X_train_clean.reindex(y_train_clean.index)
 
-    X_val_clean = X_val[FEAT_COLS].dropna()
-    y_val_clean = y_val.reindex(X_val_clean.index).dropna()
-    X_val_clean = X_val_clean.reindex(y_val_clean.index)
-
-    # ── Optuna tuning ─────────────────────────────────────────
-    best_params = _optuna_tune(X_train_clean, y_train_clean)
-
-    # ── LightGBM fit ──────────────────────────────────────────
-    lgbm_model = fit_lgbm_residual(
+    # ── CatBoost fit (M3.5) ───────────────────────────────────
+    # KHÔNG Optuna-tune: tuning trên CV tĩnh overfit kịch bản "lag365 luôn sạch",
+    # hại khi production năm-2 đọc lag365-dự-đoán (tuning_diagnosis.py). Dùng
+    # params thủ công depth=3 — robust nhất trên năm thường (≈2024). X_val_clean
+    # không còn dùng cho early-stopping (CatBoost depth=3 không cần).
+    lgbm_model = fit_catboost_residual(
         X_train_clean, y_train_clean,
         target_name=target,
-        params=best_params,
-        eval_set=(X_val_clean, y_val_clean),
     )
 
     # ── Out-of-sample validation metrics ─────────────────────
-    val_resid   = predict_lgbm_residual(lgbm_model, X_val)
+    val_resid   = predict_catboost_residual(lgbm_model, X_val)
     val_final   = blend_forecasts(val_prophet, val_resid)
     actual_val  = df.loc[VAL_START:VAL_END, target].reindex(val_final.index).dropna()
     val_aligned = val_final.reindex(actual_val.index)
@@ -200,15 +197,24 @@ def _forecast_one_target(target: str, df: pd.DataFrame, full_idx: pd.DatetimeInd
     logger.info(f"     R2   = {r2_v:.4f}")
     logger.info(f"     MAPE = {mape_v:.2f}%")
 
-    # Patch 2022 actual residuals so lag_365 for 2023 is grounded in reality
-    residual_val_actual = actual_val - val_prophet.reindex(actual_val.index)
-    full_residuals.update(residual_val_actual)
+    # Patch ALL post-train actual residuals (toàn bộ 2022) để lag_365 của 2023
+    # và lag_730 của 2024 đều grounded vào dữ liệu THẬT — KHÔNG phụ thuộc VAL_END.
+    # ⚠ Trước đây dùng actual_val (chỉ VAL_START→VAL_END). Khi VAL_END rút về
+    # 2022-05-31, 2022 H2 còn NaN → lag365 của 2023 H2 = NaN → CatBoost route
+    # nhánh missing → residual ≈ −2.3M → blend về 0 trên ~98 ngày (2023-08→12).
+    # Patch tới ngày cuối có actual TRƯỚC test (TEST_START − 1) để fix triệt để.
+    patch_start = VAL_START
+    patch_end   = str((pd.Timestamp(TEST_START) - pd.Timedelta(days=1)).date())
+    actual_post = df.loc[patch_start:patch_end, target].dropna()
+    prophet_post = prophet_preds.loc[patch_start:patch_end, "prophet_pred"]
+    residual_post_actual = actual_post - prophet_post.reindex(actual_post.index)
+    full_residuals.update(residual_post_actual)
 
     # ── Recursive Rolling Forecast ────────────────────────────
     logger.info(f"  [{target}] Rolling forecast {TEST_START} -> {TEST_END}...")
 
     # Compounding error baseline: magnitude of actual residuals in 2022
-    baseline_resid_mae = residual_val_actual.abs().mean()
+    baseline_resid_mae = residual_post_actual.abs().mean()
     logger.info(f"  [{target}] Baseline residual MAE (2022 actual): {baseline_resid_mae/scale:.4f}{unit}")
 
     residuals_rolling = full_residuals.copy()
@@ -226,7 +232,7 @@ def _forecast_one_target(target: str, df: pd.DataFrame, full_idx: pd.DatetimeInd
 
         test_prophet_yr = prophet_preds.loc[year_start:year_end, "prophet_pred"]
         X_test_yr       = X_full_iter.loc[year_start:year_end]
-        test_resid_yr   = predict_lgbm_residual(lgbm_model, X_test_yr)
+        test_resid_yr   = predict_catboost_residual(lgbm_model, X_test_yr)
         test_pred_yr    = blend_forecasts(test_prophet_yr, test_resid_yr)
         all_predictions.append(test_pred_yr)
 
@@ -248,30 +254,6 @@ def _forecast_one_target(target: str, df: pd.DataFrame, full_idx: pd.DatetimeInd
 # ============================================================
 # HELPER: Seasonal ratio forecast (COGS/Revenue)
 # ============================================================
-
-def _seasonal_ratio(ratio_hist: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
-    """
-    Dự báo ratio = COGS/Revenue bằng median theo (year_parity, month).
-
-    Vì sao KHÔNG dùng Prophet+LGBM cho ratio (đã thử & loại):
-      - Ratio gần như KHÔNG có trend (yearly median 0.81–0.85 phẳng 10 năm)
-        → Prophet trend extrapolate sai → R²=−1.39, COGS>Revenue 95% ngày.
-      - Seasonal median (parity, month): R²=0.969, COGS>Rev 0% trên val 2022.
-    Year-parity bắt được biennial Urban Blowout: August năm chẵn ratio≈0.79,
-    năm lẻ ratio≈1.37 (clearance → biên lợi nhuận âm hợp lệ).
-    """
-    h = pd.DataFrame({
-        "ratio":  ratio_hist.values,
-        "parity": ratio_hist.index.year % 2,
-        "month":  ratio_hist.index.month,
-    })
-    table = h.groupby(["parity", "month"])["ratio"].median()
-    global_med = float(h["ratio"].median())
-    return pd.Series(
-        [table.get((d.year % 2, d.month), global_med) for d in index],
-        index=index, name="ratio_pred",
-    )
-
 
 def _load_exog_regressors(index: pd.DatetimeIndex) -> dict:
     """
@@ -336,11 +318,11 @@ def run_pipeline():
     ratio_train = (df.loc[:TRAIN_END, "COGS"] / df.loc[:TRAIN_END, "Revenue"]).clip(0.5, 1.6)
     ratio_full  = (df.loc[:VAL_END,   "COGS"] / df.loc[:VAL_END,   "Revenue"]).clip(0.5, 1.6)
 
-    test_ratio_full = _seasonal_ratio(ratio_full, test_revenue_full.index)
+    test_ratio_full = seasonal_ratio_cogs(ratio_full, test_revenue_full.index)
     test_cogs_full  = test_revenue_full * test_ratio_full
 
     # COGS validation metric (cho bảng C2): Revenue_val × ratio_pred vs COGS thực 2022
-    val_ratio       = _seasonal_ratio(ratio_train, val_revenue.index)
+    val_ratio       = seasonal_ratio_cogs(ratio_train, val_revenue.index)
     val_cogs_pred   = (val_revenue * val_ratio).dropna()
     actual_cogs_val = df.loc[VAL_START:VAL_END, "COGS"].reindex(val_cogs_pred.index).dropna()
     val_cogs_pred   = val_cogs_pred.reindex(actual_cogs_val.index)

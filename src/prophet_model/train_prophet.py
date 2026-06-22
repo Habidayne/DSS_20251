@@ -106,6 +106,12 @@ def fit_prophet(series: pd.Series, target_name: str = "Revenue") -> Prophet:
         seasonality_prior_scale=10.0,
         holidays_prior_scale=10.0,
         changepoint_range=0.9,
+        # Multiplicative: doanh thu có phương sai tăng theo level (đỉnh 2016 dao
+        # động gấp ~3 lần 2013) → biên độ mùa vụ scale theo trend, không cố định.
+        # Rolling-origin backtest (prophet_mult_backtest.py) xác nhận thắng ĐỀU
+        # 3/3 fold: val2020 ΔMAE−41% (additive R²=−0.18 khi level sụt COVID),
+        # val2021 −2.8%, val2022 −5.7%.
+        seasonality_mode="multiplicative",
     )
     model.fit(train_df)
 

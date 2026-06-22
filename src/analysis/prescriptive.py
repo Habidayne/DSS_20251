@@ -112,7 +112,7 @@ def viz12_safety_stock_tradeoff(sales: pd.DataFrame, forecast_errors: pd.Series,
         ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
                  f"{risk:.1f}%", ha="center", fontsize=10, fontweight="bold")
 
-    _style_ax(ax2, title="Rủi ro thiếu hàng: Cuối tháng cao hơn — cần tăng tồn kho đệm",
+    _style_ax(ax2, title="Rủi ro giữa/cuối tháng tương đương (~38–40%); buffer +20% kéo xuống ~31%",
               xlabel="Giai đoạn trong tháng", ylabel="Rủi ro thiếu hàng (%)")
 
     fig.suptitle("Đánh đổi tồn kho an toàn: +15% là điểm cân bằng thực nghiệm (giảm rủi ro thiếu hàng, chi phí tăng thêm chấp nhận được)",

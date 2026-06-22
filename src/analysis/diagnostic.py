@@ -79,7 +79,7 @@ def viz5_denoising_stockout(sales: pd.DataFrame, inventory_path: str,
              label=f"overstock_pct (phương sai thật {ov.min():.2f}–{ov.max():.2f})")
     ax2.plot(fr.index, fr, color=GOLD, linewidth=2, label="fill_rate")
     ax2.text(0.015, 0.08,
-             "Đây mới là tín hiệu tồn kho dự báo được → đưa vào LGBM dạng lag365\n"
+             "Đây mới là tín hiệu tồn kho dự báo được → đưa vào CatBoost dạng lag365\n"
              "(future-safe). Ablation: fill_rate −14%, overstock −7.5% MAE.",
              transform=ax2.transAxes, fontsize=9, color="#0B7A75", fontweight="bold")
     _style_ax(ax2, title="Tín hiệu tồn kho THẬT: overstock_pct & fill_rate có cấu trúc mùa vụ",
@@ -171,7 +171,7 @@ def viz6_promotion_intervention(sales: pd.DataFrame, promotions_path: str, out_d
         _style_ax(ax2, title="Event Study: Mức tăng doanh thu quanh ngày bắt đầu Promo",
                   xlabel="Ngày so với ngày bắt đầu Promo", ylabel="Mức tăng trưởng doanh thu (%)")
 
-    fig.suptitle("Khuyến mãi tạo tăng trưởng doanh thu ngắn hạn: Hiệu ứng suy giảm sau 5–7 ngày",
+    fig.suptitle("Khuyến mãi: cú hích +17% ngày đầu nhưng doanh thu đảo chiều âm từ ngày thứ 3",
                  fontsize=12, fontweight="bold")
     plt.tight_layout()
     path = os.path.join(out_dir, "viz6_promotion_intervention.png")
@@ -182,7 +182,8 @@ def viz6_promotion_intervention(sales: pd.DataFrame, promotions_path: str, out_d
 
 def viz7_web_traffic_ccf(sales: pd.DataFrame, web_traffic_path: str, out_dir: str):
     """
-    Viz 7: Web traffic dẫn trước doanh thu 2-3 ngày — chỉ số dẫn xuất
+    Viz 7: Web traffic KHÔNG dẫn trước doanh thu — CCF phẳng ~0.32 ở mọi lag 0–7
+    ngày (tương quan mùa vụ chung, không phải leading indicator cấp ngày).
     JOIN: sales.Date == web_traffic.date
     """
     wt = pd.read_csv(web_traffic_path, parse_dates=["date"]).set_index("date")
@@ -242,7 +243,7 @@ def viz7_web_traffic_ccf(sales: pd.DataFrame, web_traffic_path: str, out_dir: st
     h2, l2 = ax1b.get_legend_handles_labels()
     ax1.legend(h1 + h2, l1 + l2, fontsize=8, loc="lower right")
     ax1.set_facecolor(BG)
-    ax1.set_title("Web traffic di truoc — Doanh thu di sau (2 nam gan nhat)",
+    ax1.set_title("Web traffic & Doanh thu cùng nhịp mùa vụ (2 nam gan nhat)",
                   fontsize=11, fontweight="bold", pad=8)
     ax1.tick_params(axis="x", labelsize=7, rotation=20)
 
@@ -261,7 +262,7 @@ def viz7_web_traffic_ccf(sales: pd.DataFrame, web_traffic_path: str, out_dir: st
               title=f"Phân tán: Lượt truy cập(t−{lag_opt}) vs Doanh thu(t)",
               xlabel="Lượt truy cập web (nghìn)", ylabel="Doanh thu (Triệu VNĐ)")
 
-    fig.suptitle("Lượt truy cập web dẫn trước doanh thu: Chỉ số cảnh báo sớm hiệu quả",
+    fig.suptitle("Lượt truy cập web KHÔNG dẫn trước doanh thu (CCF phẳng ~0.32) — chỉ tương quan mùa vụ chung",
                  fontsize=12, fontweight="bold")
     plt.tight_layout()
     path = os.path.join(out_dir, "viz7_web_traffic_ccf.png")
