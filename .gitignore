@@ -1,0 +1,30 @@
+# Data and Output
+csv/
+outputs/
+*.csv
+# Chặn các file xuất ra nhưng cho phép ảnh/pdf trong DSS_Project
+*.png
+!DSS_Project/**/*.png
+!DSS_Project/**/*.jpg
+!DSS_Project/*.png
+*.jpg
+*.pdf
+!DSS_Project/**/*.pdf
+!DSS_Project/*.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+*.egg-info/
+dist/
+build/
+.env
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
